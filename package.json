@@ -1,0 +1,32 @@
+{
+  "name": "feishu-cli-setup-window",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac",
+    "smoke": "node scripts/smoke-test.mjs",
+    "sandbox": "node scripts/cross-os-sandbox.mjs",
+    "window-smoke": "electron scripts/window-smoke.cjs",
+    "workspace-test": "node scripts/workspace-normalize-test.mjs"
+  },
+  "devDependencies": {
+    "electron": "latest",
+    "electron-builder": "^24.0.0"
+  }
+
+  ,"build": {
+    "appId": "com.example.feishu-cli-setup",
+    "productName": "FeishuCLI",
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity"
+    },
+    "files": ["**/*"],
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

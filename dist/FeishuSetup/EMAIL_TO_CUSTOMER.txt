@@ -1,0 +1,26 @@
+邮件主题: 请按以下步骤测试 FeishuSetup
+
+正文示例：
+
+您好，
+
+附件是 FeishuSetup.zip，用于测试 Feishu CLI Setup 窗口。请按下面步骤操作（非常简单）：
+
+1. 下载并解压 FeishuSetup.zip。
+2. 双击 FeishuSetup/start-feishu-cli-setup.command。
+
+如果 macOS 提示无法打开：右键该文件 → 选择“打开” → 在弹窗中点击“打开”。
+
+或者，也可以在终端运行（复制粘贴）：
+
+chmod +x start-feishu-cli-setup.command
+./start-feishu-cli-setup.command
+
+仅在确认文件来源可信时，可运行以下命令解除系统隔离后再运行：
+
+xattr -d com.apple.quarantine start-feishu-cli-setup.command
+./start-feishu-cli-setup.command
+
+如遇问题，请把终端里最后的输出或截图发回给我（并告诉我你的 macOS 版本）。
+
+谢谢！

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Feishu CLI Setup</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <h1 id="app-title">飞书 CLI Setup</h1>
+          <p id="status">Ready</p>
+        </div>
+        <div class="language-control">
+          <label id="language-label" for="language">语言</label>
+          <select id="language">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+      </header>
+
+      <section class="controls">
+        <label id="workspace-label" for="workspace">工作目录</label>
+        <div class="workspace-row">
+          <input id="workspace" type="text" readonly />
+          <button id="browse" type="button">选择</button>
+        </div>
+        <div class="button-row">
+          <button id="run" type="button" class="primary">run</button>
+          <button id="copy-url" type="button" disabled>复制最近 URL</button>
+          <button id="skills-guide" type="button">Skills 指南</button>
+          <button id="installed-skills" type="button">当前 Skills</button>
+          <button id="workflow-prompt" type="button">工作流 Prompt</button>
+          <button id="visual-workflow" type="button">可视化工作流</button>
+        </div>
+        <div id="progress" class="progress" aria-hidden="true"><span></span></div>
+      </section>
+
+      <textarea id="log" spellcheck="false" readonly></textarea>
+
+      <dialog id="complete-dialog">
+        <h2 id="complete-title">安装完成</h2>
+        <p id="complete-description">使用飞书 Skills 前，请重启 Codex 或其他 AI 工具。可以复制下面这个只读验证 prompt：</p>
+        <div id="prompt-render" class="rendered-content prompt-render" role="document"></div>
+        <div class="dialog-actions">
+          <button id="copy-prompt" type="button">复制 Prompt</button>
+          <button id="ok" type="button" class="primary">OK</button>
+        </div>
+      </dialog>
+
+      <dialog id="content-dialog">
+        <h2 id="content-title">Guide</h2>
+        <div id="content-render" class="rendered-content" role="document"></div>
+        <div class="dialog-actions">
+          <button id="copy-content" type="button">复制</button>
+          <button id="close-content" type="button" class="primary">关闭</button>
+        </div>
+      </dialog>
+
+      <dialog id="failure-dialog">
+        <h2 id="failure-title">安装失败</h2>
+        <div id="failure-render" class="rendered-content" role="document"></div>
+        <div class="dialog-actions">
+          <button id="copy-failure" type="button">复制错误信息</button>
+          <button id="close-failure" type="button" class="primary">关闭</button>
+        </div>
+      </dialog>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

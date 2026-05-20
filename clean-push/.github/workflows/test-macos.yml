@@ -1,0 +1,345 @@
+name: Test FeishuSetup on macOS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    name: macOS runner validation and packaging
+    runs-on: macos-latest
+    env:
+      WORKDIR: ${{ github.workspace }}/workdir
+      DELIVERY_DIR: FeishuSetup
+      ZIP_NAME: FeishuSetup.zip
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare workspace
+        run: |
+          set -eux
+          rm -rf "$WORKDIR" || true
+          mkdir -p "$WORKDIR"
+
+      - name: Show dist listing and repo info
+        run: |
+          echo "Repository root: $(pwd)"
+          echo "Git ref: $GITHUB_REF"
+          echo "Runner arch: $(uname -m)"
+          echo "macOS version:"; sw_vers || true
+          echo "dist listing:"; ls -la dist || true
+
+      - name: Verify ZIP exists and unzip
+        id: unzip
+        run: |
+          set -euxo pipefail
+          SRC_ZIP=dist/${{ env.ZIP_NAME }}
+          if [ ! -f "$SRC_ZIP" ]; then
+            echo "ERROR: $SRC_ZIP not found"; exit 2
+          fi
+          echo "Contents of $SRC_ZIP:"; unzip -l "$SRC_ZIP"
+          unzip -o "$SRC_ZIP" -d "$WORKDIR" || true
+          echo "Unzipped to $WORKDIR"
+
+      - name: Environment information
+        run: |
+          set -eux
+          echo "uname -m: $(uname -m)"
+          echo "sw_vers:"; sw_vers
+          echo "pwd: $(pwd)"
+          echo "whoami: $(whoami)"
+          echo "file start-feishu-cli-setup.command (if present):"; file dist/${{ env.DELIVERY_DIR }}/start-feishu-cli-setup.command || true
+
+      - name: Validate shell file (CRLF, BOM, shebang, permissions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR/${{ env.DELIVERY_DIR }}" || { echo "ERROR: delivery dir not found"; exit 3; }
+
+
+            - name: Prepare for real run and diagnostics
+              shell: bash
+              run: |
+                set -euxo pipefail
+                cd "$WORKDIR/${{ env.DELIVERY_DIR }}" || { echo "ERROR: delivery dir not found"; exit 3; }
+
+                # initialize logs and summary
+                SUMMARY="$WORKDIR/final-summary.txt"
+                START_LOG="$WORKDIR/start-run.log"
+                : > "$START_LOG"
+                : > "$SUMMARY"
+
+                echo "-- LS of launcher --" | tee -a "$START_LOG"
+                ls -la start-feishu-cli-setup.command | tee -a "$START_LOG" || true
+
+                # detect original executable bit
+                if [ -x start-feishu-cli-setup.command ]; then
+                  ORIG_EXEC=1
+                else
+                  ORIG_EXEC=0
+                fi
+                echo "ORIG_EXEC=$ORIG_EXEC" >> "$START_LOG"
+
+                # basic environment info
+                echo "Runner arch: $(uname -m)" | tee -a "$START_LOG"
+                sw_vers | tee -a "$START_LOG" || true
+
+                # basic file info
+                if command -v file >/dev/null 2>&1; then
+                  file start-feishu-cli-setup.command | tee -a "$START_LOG" || true
+                fi
+
+                # checks: CRLF, BOM, shebang
+                FAILURES=()
+                if grep -q $'\r' start-feishu-cli-setup.command; then
+                  FAILURES+=("CRLF detected")
+                  echo "CRLF detected" | tee -a "$START_LOG"
+                fi
+
+                BOM=$(xxd -p -l 3 start-feishu-cli-setup.command || true)
+                if [ "$BOM" = "efbbbf" ]; then
+                  FAILURES+=("UTF-8 BOM detected")
+                  echo "UTF-8 BOM detected" | tee -a "$START_LOG"
+                fi
+
+                SHEBANG_LINE=$(head -n1 start-feishu-cli-setup.command || true)
+                if [[ "$SHEBANG_LINE" != \#!* ]]; then
+                  FAILURES+=("Missing shebang")
+                  echo "Missing shebang (first line: $SHEBANG_LINE)" | tee -a "$START_LOG"
+                  SHEBANG=0
+                else
+                  SHEBANG=1
+                  echo "Shebang present: $SHEBANG_LINE" | tee -a "$START_LOG"
+                fi
+
+                # Customer chmod detection
+                if [ "$ORIG_EXEC" -eq 0 ]; then
+                  USER_WILL_NEED_CHMOD=true
+                else
+                  USER_WILL_NEED_CHMOD=false
+                fi
+                echo "USER_WILL_NEED_CHMOD=$USER_WILL_NEED_CHMOD" | tee -a "$START_LOG"
+
+                # Ensure executable for test (do not assume customer did this)
+                if [ "$ORIG_EXEC" -eq 0 ]; then
+                  chmod +x start-feishu-cli-setup.command || true
+                  echo "chmod applied for test" | tee -a "$START_LOG"
+                fi
+
+                # Run the launcher and capture stdout/stderr
+                echo "-- Running start-feishu-cli-setup.command --" | tee -a "$START_LOG"
+                set +e
+                ./start-feishu-cli-setup.command >> "$START_LOG" 2>&1
+                LAUNCH_EXIT=$?
+                set -e
+                echo "Launcher exit code: $LAUNCH_EXIT" | tee -a "$START_LOG"
+
+                # runtime/node checks
+                RUNTIME_PRESENT=0
+                if [ -x runtime/node/bin/node ]; then
+                  RUNTIME_PRESENT=1
+                  echo "Bundled node info:" | tee -a "$START_LOG"
+                  file runtime/node/bin/node | tee -a "$START_LOG" || true
+                  ./runtime/node/bin/node -v >> "$START_LOG" 2>&1 || echo "bundled node execution failed" | tee -a "$START_LOG"
+                  NODE_RUN_EXIT=${PIPESTATUS[0]:-0}
+                  if [ $NODE_RUN_EXIT -ne 0 ]; then
+                    FAILURES+=("Bundled node execution failed")
+                  fi
+                else
+                  echo "No bundled runtime node" | tee -a "$START_LOG"
+                  if command -v node >/dev/null 2>&1; then
+                    SYSTEM_NODE=1
+                    echo "System node: $(node -v)" | tee -a "$START_LOG"
+                  else
+                    SYSTEM_NODE=0
+                    FAILURES+=("No node runtime available")
+                  fi
+                fi
+
+                # Analyze launcher result for errors
+                if [ $LAUNCH_EXIT -ne 0 ]; then
+                  FAILURES+=("Launcher exited with non-zero exit code: $LAUNCH_EXIT")
+                fi
+
+                # Determine DOUBLE_CLICK_READY: shebang present, original exec bit true, runtime or system node present, and launcher exit 0
+                if [ "$SHEBANG" -eq 1 ] && [ "$ORIG_EXEC" -eq 1 ] && ( [ "$RUNTIME_PRESENT" -eq 1 ] || [ "$SYSTEM_NODE" -eq 1 ] ) && [ $LAUNCH_EXIT -eq 0 ]; then
+                  DOUBLE_CLICK_READY=true
+                else
+                  DOUBLE_CLICK_READY=false
+                fi
+
+                # Build summary
+                if [ ${#FAILURES[@]} -eq 0 ]; then
+                  MACOS_TEST_RESULT=SUCCESS
+                else
+                  MACOS_TEST_RESULT=FAILED
+                fi
+
+                # Compute simple UX score
+                SCORE=10
+                if [ "$USER_WILL_NEED_CHMOD" = true ]; then SCORE=$((SCORE-3)); fi
+                if [ $LAUNCH_EXIT -ne 0 ]; then SCORE=$((SCORE-3)); fi
+                if grep -q "No node runtime available" "$START_LOG" 2>/dev/null; then SCORE=$((SCORE-2)); fi
+                if grep -q "CRLF detected" "$START_LOG" 2>/dev/null; then SCORE=$((SCORE-1)); fi
+                if [ $SCORE -lt 1 ]; then SCORE=1; fi
+
+                # Final recommendation
+                if [ "$MACOS_TEST_RESULT" = "SUCCESS" ] && [ $SCORE -ge 8 ]; then
+                  FINAL_RECOMMENDATION="safe for internal beta users; suitable for non-technical users"
+                else
+                  FINAL_RECOMMENDATION="not suitable for non-technical users; recommend bundling node runtime and ensuring executable bit and shebang"
+                fi
+
+                # CUSTOMER_IMPACT text
+                CUSTOMER_IMPACT=()
+                if [ "$USER_WILL_NEED_CHMOD" = true ]; then CUSTOMER_IMPACT+=("customer must run chmod +x start-feishu-cli-setup.command"); fi
+                if [ $LAUNCH_EXIT -ne 0 ]; then CUSTOMER_IMPACT+=("customer may need terminal to see errors or run troubleshooting"); fi
+
+                # Write final summary
+                {
+                  echo "MACOS_TEST_RESULT: $MACOS_TEST_RESULT"
+                  echo "FAILURE_REASONS:"
+                  for f in "${FAILURES[@]}"; do echo "- $f"; done
+                  echo "USER_WILL_NEED_CHMOD: $USER_WILL_NEED_CHMOD"
+                  echo "DOUBLE_CLICK_READY: $DOUBLE_CLICK_READY"
+                  echo "LAUNCH_EXIT_CODE: $LAUNCH_EXIT"
+                  echo "CUSTOMER_IMPACT:"
+                  for ci in "${CUSTOMER_IMPACT[@]}"; do echo "- $ci"; done
+                  echo "USER_EXPERIENCE_SCORE: $SCORE"
+                  echo "FINAL_RECOMMENDATION: $FINAL_RECOMMENDATION"
+                } > "$SUMMARY"
+
+                # ensure logs exist at workspace root for artifact upload
+                mv "$START_LOG" "$GITHUB_WORKSPACE/" || true
+                mv "$SUMMARY" "$GITHUB_WORKSPACE/" || true
+          # CRLF check
+          if grep -q $'\r' start-feishu-cli-setup.command; then
+            echo "ERROR: CRLF line endings detected in start-feishu-cli-setup.command"; exit 10
+          else
+            echo "LF line endings OK"
+          fi
+
+          # UTF-8 BOM check (EF BB BF)
+          BOM=$(xxd -p -l 3 start-feishu-cli-setup.command || true)
+          if [ "$BOM" = "efbbbf" ]; then
+            echo "ERROR: UTF-8 BOM detected in start-feishu-cli-setup.command"; exit 11
+          else
+            - name: Upload artifacts (zip + logs)
+              uses: actions/upload-artifact@v4
+              with:
+                name: macos-real-test-result
+                path: |
+                  dist/${{ env.ZIP_NAME }}
+                  start-run.log
+                  final-summary.txt
+                  workdir/directory-structure.log
+
+          # Permissions check
+          PERM=$(stat -f "%OLp" start-feishu-cli-setup.command || stat -c "%a" start-feishu-cli-setup.command || true)
+          echo "Permissions: $(ls -la start-feishu-cli-setup.command)"
+          if [ ! -x start-feishu-cli-setup.command ]; then
+            echo "Launcher not executable, will chmod +x"
+            chmod +x start-feishu-cli-setup.command || true
+          fi
+
+      - name: Create fresh ZIP from unpacked delivery
+        run: |
+          set -euxo pipefail
+          cd "$WORKDIR"
+          if [ -d "${{ env.DELIVERY_DIR }}" ]; then
+            echo "Creating zip: $ZIP_NAME"
+            zip -r "$ZIP_NAME" "${{ env.DELIVERY_DIR }}"
+            echo "Zip created:"; ls -lh "$ZIP_NAME"
+            # Move zip to dist for consistency
+            mv "$ZIP_NAME" "$GITHUB_WORKSPACE/dist/" || true
+          else
+            echo "ERROR: ${DELIVERY_DIR} not found in $WORKDIR"; exit 20
+          fi
+
+      - name: Verify created ZIP exists and size
+        run: |
+          set -eux
+          NEW_ZIP=dist/${{ env.ZIP_NAME }}
+          if [ ! -f "$NEW_ZIP" ]; then echo "ERROR: $NEW_ZIP not found"; exit 21; fi
+          echo "Created zip listing:"; unzip -l "$NEW_ZIP"
+          echo "Zip size:"; ls -lh "$NEW_ZIP"
+
+      - name: Run launcher and collect logs (with diagnostics trap)
+        shell: bash
+        env:
+          ART_DIR: ${{ github.workspace }}/workdir
+        run: |
+          set -euo pipefail
+
+          on_error() {
+            echo "--- ERROR DIAGNOSTICS ---"
+            echo "Current dir: $(pwd)"
+            echo "Directory tree:"; find . -print || true
+            echo "File permissions:"; ls -la || true
+            echo "First 20 lines of start-feishu-cli-setup.command:"; head -n 20 start-feishu-cli-setup.command || true
+            if [ -f runtime/node/bin/node ]; then
+              echo "Bundled node file info:"; file runtime/node/bin/node || true
+              echo "Bundled node -v:"; ./runtime/node/bin/node -v || true
+            fi
+            echo "Zip contents:"; unzip -l "$GITHUB_WORKSPACE/dist/${{ env.ZIP_NAME }}" || true
+            # copy diagnostics to workdir for artifact
+            cp -a . "$ART_DIR/${{ env.DELIVERY_DIR }}-diagnostics" || true
+          }
+
+          trap 'on_error' ERR
+
+          cd "$WORKDIR/${{ env.DELIVERY_DIR }}"
+
+          echo "Running launcher..."
+          ./start-feishu-cli-setup.command > "$WORKDIR/start-run.log" 2>&1 || true
+          echo "Launcher done, tail log:"
+          tail -n 200 "$WORKDIR/start-run.log" || true
+
+          # runtime/node checks
+          if [ -x runtime/node/bin/node ]; then
+            echo "Bundled node detection:"; file runtime/node/bin/node || true
+            ARCH_INFO=$(file runtime/node/bin/node || true)
+            echo "ARCH_INFO: $ARCH_INFO"
+            ./runtime/node/bin/node -v > "$WORKDIR/runtime-node-v.log" 2>&1 || true
+            cat "$WORKDIR/runtime-node-v.log" || true
+          fi
+
+          # app/start.js
+          if [ -f app/start.js ]; then
+            if command -v node >/dev/null 2>&1; then
+              node app/start.js > "$WORKDIR/app-start.log" 2>&1 || true
+            else
+              echo "No system node to run app/start.js" > "$WORKDIR/app-start.log"
+            fi
+          fi
+
+      - name: Generate directory structure log
+        run: |
+          set -eux
+          cd "$WORKDIR/${{ env.DELIVERY_DIR }}"
+          if command -v tree >/dev/null 2>&1; then
+            tree -a -L 5 . > "$WORKDIR/directory-structure.log" || true
+          else
+            echo "tree not available; using find" > "$WORKDIR/directory-structure.log"
+            find . -print >> "$WORKDIR/directory-structure.log" || true
+          fi
+
+      - name: Upload artifacts (zip + logs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: feishu-setup-release
+          path: |
+            dist/${{ env.ZIP_NAME }}
+            workdir/start-run.log
+            workdir/app-start.log
+            workdir/runtime-node-v.log
+            workdir/directory-structure.log
+
+      - name: Final diagnostics (success tree)
+        run: |
+          echo "Final tree:"; cd "$WORKDIR/${{ env.DELIVERY_DIR }}"; find . -print || true
+
