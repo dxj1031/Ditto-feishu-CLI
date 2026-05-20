@@ -24,28 +24,36 @@ jobs:
         run: npm run dist
 
       - name: Prepare signing keychain (if provided)
-        if: startsWith(secrets.CERT_P12, '') == false
         env:
+          CERT_P12: ${{ secrets.CERT_P12 }}
           CERT_P12_PASSWORD: ${{ secrets.CERT_P12_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          if [ -z "${CERT_P12:-}" ]; then
+            echo "CERT_P12 is not set. Skipping signing keychain setup."
+            exit 0
+          fi
           echo "$CERT_P12_PASSWORD" >/tmp/.certpw
           echo "$KEYCHAIN_PASSWORD" >/tmp/.kpw
           echo "Decoding P12..."
-          echo "${{ secrets.CERT_P12 }}" | base64 --decode > /tmp/cert.p12
+          echo "$CERT_P12" | base64 --decode > /tmp/cert.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security import /tmp/cert.p12 -k ~/Library/Keychains/build.keychain -P "$CERT_P12_PASSWORD" -T /usr/bin/codesign || true
           security list-keychains -s ~/Library/Keychains/build.keychain
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" ~/Library/Keychains/build.keychain || true
 
       - name: Write Apple API key for notarization (if provided)
-        if: startsWith(secrets.APPLE_API_KEY, '') == false
         env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
+          if [ -z "${APPLE_API_KEY:-}" ]; then
+            echo "APPLE_API_KEY is not set. Skipping notarization API key setup."
+            exit 0
+          fi
           echo "Writing Apple API key..."
-          echo "${{ secrets.APPLE_API_KEY }}" | base64 --decode > ./AuthKey_${APPLE_API_KEY_ID}.p8
+          echo "$APPLE_API_KEY" | base64 --decode > ./AuthKey_${APPLE_API_KEY_ID}.p8
           ls -l ./AuthKey_${APPLE_API_KEY_ID}.p8
           echo "Set env vars for electron-builder"
           echo "APPLE_API_KEY_PATH=./AuthKey_${APPLE_API_KEY_ID}.p8" >> $GITHUB_ENV

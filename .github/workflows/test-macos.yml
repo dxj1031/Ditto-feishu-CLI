@@ -1,345 +1,334 @@
-name: Test FeishuSetup on macOS
+name: Test FeishuSetup macOS Delivery
 
 on:
   push:
     branches: [ main ]
+    paths:
+      - ".github/workflows/test-macos.yml"
+      - "dist/FeishuSetup-macos.zip"
+      - "dist/FeishuSetup-macos/**"
+      - "scripts/create-zip-with-modes.mjs"
+      - "scripts/macos-terminal-setup.mjs"
+      - "scripts/start-feishu-setup.command"
+      - "src/setup-core.mjs"
   workflow_dispatch: {}
 
 jobs:
-  test:
-    name: macOS runner validation and packaging
+  test-delivery:
+    name: Unpack and run mocked setup on macOS
     runs-on: macos-latest
+    timeout-minutes: 30
     env:
+      ZIP_NAME: FeishuSetup-macos.zip
+      DELIVERY_DIR: FeishuSetup-macos
       WORKDIR: ${{ github.workspace }}/workdir
-      DELIVERY_DIR: FeishuSetup
-      ZIP_NAME: FeishuSetup.zip
+      SHIM_DIR: ${{ github.workspace }}/mock-bin
+      MOCK_HOME: ${{ github.workspace }}/mock-home
+      MOCK_WORKSPACE: ${{ github.workspace }}/mock-workspace
+      START_LOG: ${{ github.workspace }}/start-run.log
+      SUMMARY: ${{ github.workspace }}/final-summary.txt
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Prepare workspace
+      - name: Show runner information
+        shell: bash
         run: |
-          set -eux
-          rm -rf "$WORKDIR" || true
-          mkdir -p "$WORKDIR"
-
-      - name: Show dist listing and repo info
-        run: |
-          echo "Repository root: $(pwd)"
-          echo "Git ref: $GITHUB_REF"
+          set -euo pipefail
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
           echo "Runner arch: $(uname -m)"
-          echo "macOS version:"; sw_vers || true
-          echo "dist listing:"; ls -la dist || true
+          sw_vers
+          echo "dist listing:"
+          ls -la dist || true
 
-      - name: Verify ZIP exists and unzip
-        id: unzip
-        run: |
-          set -euxo pipefail
-          SRC_ZIP=dist/${{ env.ZIP_NAME }}
-          if [ ! -f "$SRC_ZIP" ]; then
-            echo "ERROR: $SRC_ZIP not found"; exit 2
-          fi
-          echo "Contents of $SRC_ZIP:"; unzip -l "$SRC_ZIP"
-          unzip -o "$SRC_ZIP" -d "$WORKDIR" || true
-          echo "Unzipped to $WORKDIR"
-
-      - name: Environment information
-        run: |
-          set -eux
-          echo "uname -m: $(uname -m)"
-          echo "sw_vers:"; sw_vers
-          echo "pwd: $(pwd)"
-          echo "whoami: $(whoami)"
-          echo "file start-feishu-cli-setup.command (if present):"; file dist/${{ env.DELIVERY_DIR }}/start-feishu-cli-setup.command || true
-
-      - name: Validate shell file (CRLF, BOM, shebang, permissions)
+      - name: Unpack delivery package
         shell: bash
         run: |
           set -euo pipefail
-          cd "$WORKDIR/${{ env.DELIVERY_DIR }}" || { echo "ERROR: delivery dir not found"; exit 3; }
-
-
-            - name: Prepare for real run and diagnostics
-              shell: bash
-              run: |
-                set -euxo pipefail
-                cd "$WORKDIR/${{ env.DELIVERY_DIR }}" || { echo "ERROR: delivery dir not found"; exit 3; }
-
-                # initialize logs and summary
-                SUMMARY="$WORKDIR/final-summary.txt"
-                START_LOG="$WORKDIR/start-run.log"
-                : > "$START_LOG"
-                : > "$SUMMARY"
-
-                echo "-- LS of launcher --" | tee -a "$START_LOG"
-                ls -la start-feishu-cli-setup.command | tee -a "$START_LOG" || true
-
-                # detect original executable bit
-                if [ -x start-feishu-cli-setup.command ]; then
-                  ORIG_EXEC=1
-                else
-                  ORIG_EXEC=0
-                fi
-                echo "ORIG_EXEC=$ORIG_EXEC" >> "$START_LOG"
-
-                # basic environment info
-                echo "Runner arch: $(uname -m)" | tee -a "$START_LOG"
-                sw_vers | tee -a "$START_LOG" || true
-
-                # basic file info
-                if command -v file >/dev/null 2>&1; then
-                  file start-feishu-cli-setup.command | tee -a "$START_LOG" || true
-                fi
-
-                # checks: CRLF, BOM, shebang
-                FAILURES=()
-                if grep -q $'\r' start-feishu-cli-setup.command; then
-                  FAILURES+=("CRLF detected")
-                  echo "CRLF detected" | tee -a "$START_LOG"
-                fi
-
-                BOM=$(xxd -p -l 3 start-feishu-cli-setup.command || true)
-                if [ "$BOM" = "efbbbf" ]; then
-                  FAILURES+=("UTF-8 BOM detected")
-                  echo "UTF-8 BOM detected" | tee -a "$START_LOG"
-                fi
-
-                SHEBANG_LINE=$(head -n1 start-feishu-cli-setup.command || true)
-                if [[ "$SHEBANG_LINE" != \#!* ]]; then
-                  FAILURES+=("Missing shebang")
-                  echo "Missing shebang (first line: $SHEBANG_LINE)" | tee -a "$START_LOG"
-                  SHEBANG=0
-                else
-                  SHEBANG=1
-                  echo "Shebang present: $SHEBANG_LINE" | tee -a "$START_LOG"
-                fi
-
-                # Customer chmod detection
-                if [ "$ORIG_EXEC" -eq 0 ]; then
-                  USER_WILL_NEED_CHMOD=true
-                else
-                  USER_WILL_NEED_CHMOD=false
-                fi
-                echo "USER_WILL_NEED_CHMOD=$USER_WILL_NEED_CHMOD" | tee -a "$START_LOG"
-
-                # Ensure executable for test (do not assume customer did this)
-                if [ "$ORIG_EXEC" -eq 0 ]; then
-                  chmod +x start-feishu-cli-setup.command || true
-                  echo "chmod applied for test" | tee -a "$START_LOG"
-                fi
-
-                # Run the launcher and capture stdout/stderr
-                echo "-- Running start-feishu-cli-setup.command --" | tee -a "$START_LOG"
-                set +e
-                ./start-feishu-cli-setup.command >> "$START_LOG" 2>&1
-                LAUNCH_EXIT=$?
-                set -e
-                echo "Launcher exit code: $LAUNCH_EXIT" | tee -a "$START_LOG"
-
-                # runtime/node checks
-                RUNTIME_PRESENT=0
-                if [ -x runtime/node/bin/node ]; then
-                  RUNTIME_PRESENT=1
-                  echo "Bundled node info:" | tee -a "$START_LOG"
-                  file runtime/node/bin/node | tee -a "$START_LOG" || true
-                  ./runtime/node/bin/node -v >> "$START_LOG" 2>&1 || echo "bundled node execution failed" | tee -a "$START_LOG"
-                  NODE_RUN_EXIT=${PIPESTATUS[0]:-0}
-                  if [ $NODE_RUN_EXIT -ne 0 ]; then
-                    FAILURES+=("Bundled node execution failed")
-                  fi
-                else
-                  echo "No bundled runtime node" | tee -a "$START_LOG"
-                  if command -v node >/dev/null 2>&1; then
-                    SYSTEM_NODE=1
-                    echo "System node: $(node -v)" | tee -a "$START_LOG"
-                  else
-                    SYSTEM_NODE=0
-                    FAILURES+=("No node runtime available")
-                  fi
-                fi
-
-                # Analyze launcher result for errors
-                if [ $LAUNCH_EXIT -ne 0 ]; then
-                  FAILURES+=("Launcher exited with non-zero exit code: $LAUNCH_EXIT")
-                fi
-
-                # Determine DOUBLE_CLICK_READY: shebang present, original exec bit true, runtime or system node present, and launcher exit 0
-                if [ "$SHEBANG" -eq 1 ] && [ "$ORIG_EXEC" -eq 1 ] && ( [ "$RUNTIME_PRESENT" -eq 1 ] || [ "$SYSTEM_NODE" -eq 1 ] ) && [ $LAUNCH_EXIT -eq 0 ]; then
-                  DOUBLE_CLICK_READY=true
-                else
-                  DOUBLE_CLICK_READY=false
-                fi
-
-                # Build summary
-                if [ ${#FAILURES[@]} -eq 0 ]; then
-                  MACOS_TEST_RESULT=SUCCESS
-                else
-                  MACOS_TEST_RESULT=FAILED
-                fi
-
-                # Compute simple UX score
-                SCORE=10
-                if [ "$USER_WILL_NEED_CHMOD" = true ]; then SCORE=$((SCORE-3)); fi
-                if [ $LAUNCH_EXIT -ne 0 ]; then SCORE=$((SCORE-3)); fi
-                if grep -q "No node runtime available" "$START_LOG" 2>/dev/null; then SCORE=$((SCORE-2)); fi
-                if grep -q "CRLF detected" "$START_LOG" 2>/dev/null; then SCORE=$((SCORE-1)); fi
-                if [ $SCORE -lt 1 ]; then SCORE=1; fi
-
-                # Final recommendation
-                if [ "$MACOS_TEST_RESULT" = "SUCCESS" ] && [ $SCORE -ge 8 ]; then
-                  FINAL_RECOMMENDATION="safe for internal beta users; suitable for non-technical users"
-                else
-                  FINAL_RECOMMENDATION="not suitable for non-technical users; recommend bundling node runtime and ensuring executable bit and shebang"
-                fi
-
-                # CUSTOMER_IMPACT text
-                CUSTOMER_IMPACT=()
-                if [ "$USER_WILL_NEED_CHMOD" = true ]; then CUSTOMER_IMPACT+=("customer must run chmod +x start-feishu-cli-setup.command"); fi
-                if [ $LAUNCH_EXIT -ne 0 ]; then CUSTOMER_IMPACT+=("customer may need terminal to see errors or run troubleshooting"); fi
-
-                # Write final summary
-                {
-                  echo "MACOS_TEST_RESULT: $MACOS_TEST_RESULT"
-                  echo "FAILURE_REASONS:"
-                  for f in "${FAILURES[@]}"; do echo "- $f"; done
-                  echo "USER_WILL_NEED_CHMOD: $USER_WILL_NEED_CHMOD"
-                  echo "DOUBLE_CLICK_READY: $DOUBLE_CLICK_READY"
-                  echo "LAUNCH_EXIT_CODE: $LAUNCH_EXIT"
-                  echo "CUSTOMER_IMPACT:"
-                  for ci in "${CUSTOMER_IMPACT[@]}"; do echo "- $ci"; done
-                  echo "USER_EXPERIENCE_SCORE: $SCORE"
-                  echo "FINAL_RECOMMENDATION: $FINAL_RECOMMENDATION"
-                } > "$SUMMARY"
-
-                # ensure logs exist at workspace root for artifact upload
-                mv "$START_LOG" "$GITHUB_WORKSPACE/" || true
-                mv "$SUMMARY" "$GITHUB_WORKSPACE/" || true
-          # CRLF check
-          if grep -q $'\r' start-feishu-cli-setup.command; then
-            echo "ERROR: CRLF line endings detected in start-feishu-cli-setup.command"; exit 10
-          else
-            echo "LF line endings OK"
+          test -f "dist/$ZIP_NAME"
+          rm -rf "$WORKDIR" "$MOCK_HOME" "$MOCK_WORKSPACE" "$SHIM_DIR"
+          mkdir -p "$WORKDIR" "$MOCK_HOME" "$MOCK_WORKSPACE" "$SHIM_DIR"
+          unzip -l "dist/$ZIP_NAME"
+          unzip -q "dist/$ZIP_NAME" -d "$WORKDIR"
+          test -d "$WORKDIR/$DELIVERY_DIR"
+          ZIP_BYTES="$(stat -f %z "dist/$ZIP_NAME")"
+          if [ "$ZIP_BYTES" -gt 1048576 ]; then
+            echo "Delivery zip is too large for lightweight mode: $ZIP_BYTES bytes"
+            exit 9
           fi
 
-          # UTF-8 BOM check (EF BB BF)
-          BOM=$(xxd -p -l 3 start-feishu-cli-setup.command || true)
+      - name: Validate lightweight launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR/$DELIVERY_DIR"
+
+          test -f start-feishu-setup.command
+          test -x start-feishu-setup.command
+          test -f app/terminal-setup.mjs
+          test -f app/setup-core.mjs
+
+          if grep -q $'\r' start-feishu-setup.command; then
+            echo "CRLF detected in launcher"; exit 10
+          fi
+
+          BOM="$(xxd -p -l 3 start-feishu-setup.command || true)"
           if [ "$BOM" = "efbbbf" ]; then
-            echo "ERROR: UTF-8 BOM detected in start-feishu-cli-setup.command"; exit 11
-          else
-            - name: Upload artifacts (zip + logs)
-              uses: actions/upload-artifact@v4
-              with:
-                name: macos-real-test-result
-                path: |
-                  dist/${{ env.ZIP_NAME }}
-                  start-run.log
-                  final-summary.txt
-                  workdir/directory-structure.log
-
-          # Permissions check
-          PERM=$(stat -f "%OLp" start-feishu-cli-setup.command || stat -c "%a" start-feishu-cli-setup.command || true)
-          echo "Permissions: $(ls -la start-feishu-cli-setup.command)"
-          if [ ! -x start-feishu-cli-setup.command ]; then
-            echo "Launcher not executable, will chmod +x"
-            chmod +x start-feishu-cli-setup.command || true
+            echo "UTF-8 BOM detected in launcher"; exit 11
           fi
 
-      - name: Create fresh ZIP from unpacked delivery
-        run: |
-          set -euxo pipefail
-          cd "$WORKDIR"
-          if [ -d "${{ env.DELIVERY_DIR }}" ]; then
-            echo "Creating zip: $ZIP_NAME"
-            zip -r "$ZIP_NAME" "${{ env.DELIVERY_DIR }}"
-            echo "Zip created:"; ls -lh "$ZIP_NAME"
-            # Move zip to dist for consistency
-            mv "$ZIP_NAME" "$GITHUB_WORKSPACE/dist/" || true
-          else
-            echo "ERROR: ${DELIVERY_DIR} not found in $WORKDIR"; exit 20
+          SHEBANG="$(head -n 1 start-feishu-setup.command)"
+          if [[ "$SHEBANG" != "#!"* ]]; then
+            echo "Missing launcher shebang"; exit 12
           fi
 
-      - name: Verify created ZIP exists and size
-        run: |
-          set -eux
-          NEW_ZIP=dist/${{ env.ZIP_NAME }}
-          if [ ! -f "$NEW_ZIP" ]; then echo "ERROR: $NEW_ZIP not found"; exit 21; fi
-          echo "Created zip listing:"; unzip -l "$NEW_ZIP"
-          echo "Zip size:"; ls -lh "$NEW_ZIP"
+          NODE_ARCH="x64"
+          if [ "$(uname -m)" = "arm64" ]; then
+            NODE_ARCH="arm64"
+          fi
 
-      - name: Run launcher and collect logs (with diagnostics trap)
+          if [ -e "runtime/node-v24.15.0-darwin-${NODE_ARCH}.tar.gz" ]; then
+            echo "Node runtime tarball must not be bundled in lightweight mode"
+            exit 13
+          fi
+
+      - name: Create mocked Feishu CLI toolchain
         shell: bash
-        env:
-          ART_DIR: ${{ github.workspace }}/workdir
         run: |
           set -euo pipefail
 
-          on_error() {
-            echo "--- ERROR DIAGNOSTICS ---"
-            echo "Current dir: $(pwd)"
-            echo "Directory tree:"; find . -print || true
-            echo "File permissions:"; ls -la || true
-            echo "First 20 lines of start-feishu-cli-setup.command:"; head -n 20 start-feishu-cli-setup.command || true
-            if [ -f runtime/node/bin/node ]; then
-              echo "Bundled node file info:"; file runtime/node/bin/node || true
-              echo "Bundled node -v:"; ./runtime/node/bin/node -v || true
-            fi
-            echo "Zip contents:"; unzip -l "$GITHUB_WORKSPACE/dist/${{ env.ZIP_NAME }}" || true
-            # copy diagnostics to workdir for artifact
-            cp -a . "$ART_DIR/${{ env.DELIVERY_DIR }}-diagnostics" || true
-          }
+          cat > "$SHIM_DIR/open" <<'SH'
+          #!/usr/bin/env bash
+          echo "[mock open] $*" >> "${FEISHU_CI_OPEN_LOG:-$HOME/open.log}"
+          exit 0
+          SH
 
-          trap 'on_error' ERR
+          cat > "$SHIM_DIR/npm" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          if [ "${1:-}" = "--version" ]; then
+            echo "11.13.0-macos-ci"
+            exit 0
+          fi
+          if [ "${1:-}" = "install" ] && [ "${2:-}" = "-g" ] && [ "${3:-}" = "@larksuite/cli@latest" ]; then
+            cp "$SCRIPT_DIR/lark-cli-template" "$SCRIPT_DIR/lark-cli"
+            chmod +x "$SCRIPT_DIR/lark-cli"
+            echo "[mock npm] fallback lark-cli install"
+            exit 0
+          fi
+          echo "[mock npm] unsupported args: $*" >&2
+          exit 2
+          SH
 
-          cd "$WORKDIR/${{ env.DELIVERY_DIR }}"
+          cat > "$SHIM_DIR/npx" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          SKILLS=(
+            lark-approval lark-attendance lark-base lark-calendar lark-contact
+            lark-doc lark-drive lark-event lark-im lark-mail lark-markdown
+            lark-minutes lark-okr lark-openapi-explorer lark-shared lark-sheets
+            lark-skill-maker lark-slides lark-task lark-vc lark-vc-agent
+            lark-whiteboard lark-wiki lark-workflow-meeting-summary
+            lark-workflow-standup-report
+          )
 
-          echo "Running launcher..."
-          ./start-feishu-cli-setup.command > "$WORKDIR/start-run.log" 2>&1 || true
-          echo "Launcher done, tail log:"
-          tail -n 200 "$WORKDIR/start-run.log" || true
-
-          # runtime/node checks
-          if [ -x runtime/node/bin/node ]; then
-            echo "Bundled node detection:"; file runtime/node/bin/node || true
-            ARCH_INFO=$(file runtime/node/bin/node || true)
-            echo "ARCH_INFO: $ARCH_INFO"
-            ./runtime/node/bin/node -v > "$WORKDIR/runtime-node-v.log" 2>&1 || true
-            cat "$WORKDIR/runtime-node-v.log" || true
+          if [ "${1:-}" = "--version" ]; then
+            echo "11.13.0-macos-ci"
+            exit 0
           fi
 
-          # app/start.js
-          if [ -f app/start.js ]; then
-            if command -v node >/dev/null 2>&1; then
-              node app/start.js > "$WORKDIR/app-start.log" 2>&1 || true
-            else
-              echo "No system node to run app/start.js" > "$WORKDIR/app-start.log"
-            fi
+          if [ "${1:-}" = "--yes" ] && [ "${2:-}" = "@larksuite/cli@latest" ] && [ "${3:-}" = "install" ]; then
+            cp "$SCRIPT_DIR/lark-cli-template" "$SCRIPT_DIR/lark-cli"
+            chmod +x "$SCRIPT_DIR/lark-cli"
+            echo "[mock npx] official Feishu CLI install"
+            exit 0
           fi
 
-      - name: Generate directory structure log
+          if [ "${1:-}" = "skills" ] && [ "${2:-}" = "add" ] && [[ " $* " == *" --list "* ]]; then
+            echo "[mock npx] Found ${#SKILLS[@]} skills"
+            printf '  %s\n' "${SKILLS[@]}"
+            echo "  deprecated/reference names that must be ignored: lark-cli lark-whiteboard-cli"
+            exit 0
+          fi
+
+          if [ "${1:-}" = "skills" ] && [ "${2:-}" = "add" ]; then
+            SKILL=""
+            PREV=""
+            for ARG in "$@"; do
+              if [ "$PREV" = "--skill" ]; then
+                SKILL="$ARG"
+                break
+              fi
+              PREV="$ARG"
+            done
+            if [ -z "$SKILL" ]; then
+              echo "[mock npx] missing --skill" >&2
+              exit 3
+            fi
+            mkdir -p "$HOME/.agents/skills/$SKILL"
+            printf -- "---\nname: %s\ndescription: macOS CI mock skill\n---\n# %s\n" "$SKILL" "$SKILL" > "$HOME/.agents/skills/$SKILL/SKILL.md"
+            echo "[mock npx] AI Agent Skill installed: $SKILL"
+            exit 0
+          fi
+
+          echo "[mock npx] unsupported args: $*" >&2
+          exit 2
+          SH
+
+          cat > "$SHIM_DIR/lark-cli-template" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          STATE_DIR="${FEISHU_CI_STATE_DIR:-$HOME/.feishu-ci-state}"
+          mkdir -p "$STATE_DIR"
+
+          if [ "${1:-}" = "--version" ]; then
+            echo "lark-cli version 99.0.0-macos-ci"
+            exit 0
+          fi
+
+          if [ "${1:-}" = "update" ]; then
+            echo "[mock lark-cli] update completed"
+            exit 0
+          fi
+
+          if [ "${1:-}" = "config" ] && [ "${2:-}" = "show" ]; then
+            if [ -f "$STATE_DIR/config.ok" ]; then
+              echo '{"appId":"mock_app","appSecret":"****","brand":"feishu","profile":"macos-ci","users":"Mock User (ou_mock)"}'
+              exit 0
+            fi
+            echo "[mock lark-cli] no config yet" >&2
+            exit 1
+          fi
+
+          if [ "${1:-}" = "config" ] && [ "${2:-}" = "init" ]; then
+            echo "https://open.feishu.cn/macos-ci/config"
+            touch "$STATE_DIR/config.ok"
+            exit 0
+          fi
+
+          if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
+            if [ -f "$STATE_DIR/auth.ok" ]; then
+              echo '{"appId":"mock_app","brand":"feishu","identity":"user","tokenStatus":"valid","userName":"Mock User","userOpenId":"ou_mock"}'
+              exit 0
+            fi
+            echo '{"appId":"mock_app","brand":"feishu","identity":"user","tokenStatus":"missing"}'
+            exit 1
+          fi
+
+          if [ "${1:-}" = "auth" ] && [ "${2:-}" = "login" ] && [ "${3:-}" = "--recommend" ]; then
+            echo '{"verification_url":"https://accounts.feishu.cn/macos-ci/auth","device_code":"CI-DEVICE-CODE"}'
+            exit 0
+          fi
+
+          if [ "${1:-}" = "auth" ] && [ "${2:-}" = "login" ] && [ "${3:-}" = "--device-code" ]; then
+            if [ "${4:-}" = "CI-DEVICE-CODE" ]; then
+              touch "$STATE_DIR/auth.ok"
+              echo "[mock lark-cli] auth completed"
+              exit 0
+            fi
+            echo "[mock lark-cli] invalid device code" >&2
+            exit 1
+          fi
+
+          echo "[mock lark-cli] unsupported args: $*" >&2
+          exit 2
+          SH
+
+          chmod +x "$SHIM_DIR/open" "$SHIM_DIR/npm" "$SHIM_DIR/npx"
+
+      - name: Run launcher with quarantine simulation
+        shell: bash
         run: |
-          set -eux
-          cd "$WORKDIR/${{ env.DELIVERY_DIR }}"
-          if command -v tree >/dev/null 2>&1; then
-            tree -a -L 5 . > "$WORKDIR/directory-structure.log" || true
-          else
-            echo "tree not available; using find" > "$WORKDIR/directory-structure.log"
-            find . -print >> "$WORKDIR/directory-structure.log" || true
+          set -euo pipefail
+          cd "$WORKDIR/$DELIVERY_DIR"
+
+          NODE_ARCH="x64"
+          if [ "$(uname -m)" = "arm64" ]; then
+            NODE_ARCH="arm64"
           fi
 
-      - name: Upload artifacts (zip + logs)
+          export HOME="$MOCK_HOME"
+          export PATH="$SHIM_DIR:/usr/bin:/bin:/usr/sbin:/sbin"
+          export FEISHU_CI_STATE_DIR="$GITHUB_WORKSPACE/mock-state"
+          export FEISHU_CI_OPEN_LOG="$GITHUB_WORKSPACE/open-url.log"
+          export FEISHU_SETUP_WORKSPACE="$MOCK_WORKSPACE"
+          export FEISHU_SETUP_FORCE_NODE_DOWNLOAD=1
+          export FEISHU_SETUP_NO_PAUSE=1
+          export FEISHU_SETUP_PATH_OVERRIDE="$SHIM_DIR:$PWD/runtime/node-v24.15.0-darwin-${NODE_ARCH}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+          if command -v lark-cli >/dev/null 2>&1; then
+            echo "lark-cli should not exist before the setup install path runs"
+            exit 20
+          fi
+
+          xattr -w com.apple.quarantine "0081;$(date +%s);GitHubActions;CI" start-feishu-setup.command
+          spctl --assess --type execute -vv start-feishu-setup.command >> "$START_LOG" 2>&1 || true
+
+          set +e
+          ./start-feishu-setup.command >> "$START_LOG" 2>&1
+          LAUNCH_EXIT=$?
+          set -e
+
+          echo "Launcher exit code: $LAUNCH_EXIT" | tee -a "$START_LOG"
+          cat "$START_LOG"
+
+          if [ "$LAUNCH_EXIT" -ne 0 ]; then
+            exit "$LAUNCH_EXIT"
+          fi
+
+          test -x "runtime/node-v24.15.0-darwin-${NODE_ARCH}/bin/node"
+          "runtime/node-v24.15.0-darwin-${NODE_ARCH}/bin/node" --version | grep -q "v24.15.0"
+
+          if xattr -p com.apple.quarantine start-feishu-setup.command >/dev/null 2>&1; then
+            echo "Launcher did not clear quarantine attribute"
+            exit 21
+          fi
+
+          grep -q "Node.js runtime was not found. Downloading v24.15.0" "$START_LOG"
+          grep -q "Node.js downloaded and verified. Extracting runtime" "$START_LOG"
+          grep -q "v24.15.0" "$START_LOG"
+          grep -q "lark-cli is missing. Running official one-click install." "$START_LOG"
+          grep -q "\[mock npx\] official Feishu CLI install" "$START_LOG"
+          grep -q "Feishu AI Agent Skills verified: 25/25" "$START_LOG"
+          grep -q "SETUP_RESULT=SUCCESS" "$START_LOG"
+          grep -q "identity=user" "$MOCK_HOME/feishu-setup-run.log"
+          grep -q "tokenStatus=valid" "$MOCK_HOME/feishu-setup-run.log"
+
+          SKILL_COUNT="$(find "$MOCK_HOME/.agents/skills" -name SKILL.md | wc -l | tr -d ' ')"
+          if [ "$SKILL_COUNT" -ne 25 ]; then
+            echo "Expected 25 mock skills, got $SKILL_COUNT"
+            exit 22
+          fi
+
+          test -s "$GITHUB_WORKSPACE/open-url.log"
+          grep -q "accounts.feishu.cn/macos-ci/auth" "$GITHUB_WORKSPACE/open-url.log"
+
+          {
+            echo "MACOS_TEST_RESULT=SUCCESS"
+            echo "DELIVERY_ZIP=dist/$ZIP_NAME"
+            echo "LAUNCH_EXIT_CODE=$LAUNCH_EXIT"
+            echo "RUNNER_ARCH=$(uname -m)"
+            echo "NODE_ARCH=$NODE_ARCH"
+            echo "MOCK_SKILL_COUNT=$SKILL_COUNT"
+            echo "QUARANTINE_CLEARED=true"
+            echo "BUNDLED_NODE_USED=false"
+            echo "NODE_DOWNLOAD_PATH_TESTED=true"
+            echo "LARK_CLI_INSTALL_PATH_TESTED=true"
+            echo "AUTH_FLOW_MOCKED=true"
+          } > "$SUMMARY"
+
+      - name: Upload macOS test artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: feishu-setup-release
+          name: feishu-setup-macos-test
           path: |
             dist/${{ env.ZIP_NAME }}
-            workdir/start-run.log
-            workdir/app-start.log
-            workdir/runtime-node-v.log
-            workdir/directory-structure.log
-
-      - name: Final diagnostics (success tree)
-        run: |
-          echo "Final tree:"; cd "$WORKDIR/${{ env.DELIVERY_DIR }}"; find . -print || true
-
+            start-run.log
+            final-summary.txt
+            open-url.log
+            mock-home/feishu-setup-run.log
